@@ -2,9 +2,9 @@ package service
 
 import (
 	"context"
+	"os"
 
 	"github.com/google/uuid"
-
 	"github.com/rezexell/bashtt/internal/domain"
 )
 
@@ -15,7 +15,7 @@ type SSHClient interface {
 		ctx context.Context,
 		path string,
 		data []byte,
-		mode uint32,
+		mode os.FileMode,
 	) error
 
 	Execute(
