@@ -6,12 +6,14 @@ import (
 )
 
 type Router struct {
-	logger *slog.Logger
+	logger        *slog.Logger
+	createHandler *CreateHandler
 }
 
-func NewRouter(logger *slog.Logger) *Router {
+func NewRouter(logger *slog.Logger, createHandler *CreateHandler) *Router {
 	return &Router{
-		logger: logger,
+		logger:        logger,
+		createHandler: createHandler,
 	}
 }
 
@@ -19,6 +21,8 @@ func (r *Router) Handler() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /health", r.health)
+
+	mux.HandleFunc("POST /create", r.createHandler.Create)
 
 	return loggingMiddleware(r.logger, mux)
 }
