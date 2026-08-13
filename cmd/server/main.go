@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
-	"github.com/rezexell/bashtt/internal/agent"
+
 	"github.com/rezexell/bashtt/internal/config"
 	"github.com/rezexell/bashtt/internal/logging"
 	"github.com/rezexell/bashtt/internal/repository/memory"
@@ -24,7 +24,10 @@ import (
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		fmt.Printf("load .env: %v", err)
+		fmt.Printf(
+			"load .env: %v\n",
+			err,
+		)
 	}
 
 	cfg, err := config.Load()
@@ -39,7 +42,16 @@ func main() {
 		},
 	)
 
-	logger.Info("cfg", "HTTP_CREATE_ADDR:", cfg.HTTP.CreateAddr)
+	logger.Info(
+		"configuration loaded",
+		"create_addr", cfg.HTTP.CreateAddr,
+		"callback_addr", cfg.HTTP.CallbackAddr,
+		"ssh_port", cfg.SSH.Port,
+		"agent_binary", cfg.Agent.LocalBinaryPath,
+		"agent_remote_path", cfg.Agent.RemoteBinaryPath,
+		"agent_watch_dir", cfg.Agent.WatchDir,
+		"agent_callback_url", cfg.Agent.CallbackURL,
+	)
 
 	if err := run(logger, cfg); err != nil {
 		logger.Error(
@@ -77,10 +89,16 @@ func run(
 	eventRepository :=
 		memory.NewEventRepository()
 
-	agentInstaller :=
-		agent.NewNoopInstaller()
+	agentInstaller := service.NewAgentInstaller(
+		service.AgentInstallerConfig{
+			LocalBinaryPath:  cfg.Agent.LocalBinaryPath,
+			RemoteBinaryPath: cfg.Agent.RemoteBinaryPath,
+			WatchDir:         cfg.Agent.WatchDir,
+			CallbackURL:      cfg.Agent.CallbackURL,
+			PIDFilePath:      cfg.Agent.PIDFilePath,
+		},
+	)
 
-		//app
 	createService := service.NewCreateService(
 		sshAdapter,
 		templateProvider,
@@ -94,7 +112,6 @@ func run(
 		eventRepository,
 	)
 
-	//http
 	createHandler := httptransport.NewCreateHandler(
 		createService,
 	)
@@ -112,10 +129,16 @@ func run(
 		healthHandler,
 	)
 
-	createServer := newHTTPServer(cfg.HTTP.CreateAddr, router.CreateHandler())
+	createServer := newHTTPServer(
+		cfg.HTTP.CreateAddr,
+		router.CreateHandler(),
+	)
 
-	callbackServer := newHTTPServer(cfg.HTTP.CallbackAddr, router.CallbackHandler())
-	//graceful sd
+	callbackServer := newHTTPServer(
+		cfg.HTTP.CallbackAddr,
+		router.CallbackHandler(),
+	)
+
 	serverErrors := make(chan error, 2)
 
 	go func() {
@@ -145,14 +168,19 @@ func run(
 
 	select {
 	case err := <-serverErrors:
-		if errors.Is(err, http.ErrServerClosed) {
+		if errors.Is(
+			err,
+			http.ErrServerClosed,
+		) {
 			return nil
 		}
 
 		return err
 
 	case <-signalCtx.Done():
-		logger.Info("shutdown signal received")
+		logger.Info(
+			"shutdown signal received",
+		)
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(
@@ -179,7 +207,9 @@ func run(
 		)
 	}
 
-	logger.Info("server stopped")
+	logger.Info(
+		"server stopped",
+	)
 
 	return nil
 }

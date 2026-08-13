@@ -29,6 +29,7 @@ type AgentConfig struct {
 	RemoteBinaryPath string
 	WatchDir         string
 	CallbackURL      string
+	PIDFilePath      string
 }
 
 type LogConfig struct {
@@ -83,12 +84,12 @@ func Load() (Config, error) {
 
 		Agent: AgentConfig{
 			LocalBinaryPath: getEnv(
-				"AGENT_BINARY_PATH",
+				"AGENT_LOCAL_BINARY",
 				"./bin/agent",
 			),
 
 			RemoteBinaryPath: getEnv(
-				"AGENT_REMOTE_BINARY_PATH",
+				"AGENT_REMOTE_BINARY",
 				"/tmp/bashtt/agent",
 			),
 
@@ -99,7 +100,12 @@ func Load() (Config, error) {
 
 			CallbackURL: getEnv(
 				"AGENT_CALLBACK_URL",
-				"http://127.0.0.1:8081/callback",
+				"http://host.docker.internal:8081/callback",
+			),
+
+			PIDFilePath: getEnv(
+				"AGENT_PID_FILE",
+				"/tmp/bashtt/agent.pid",
 			),
 		},
 

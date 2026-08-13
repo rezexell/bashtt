@@ -12,6 +12,7 @@ type AgentInstallerConfig struct {
 	RemoteBinaryPath string
 	WatchDir         string
 	CallbackURL      string
+	PIDFilePath      string
 }
 
 type DefaultAgentInstaller struct {
@@ -50,6 +51,13 @@ func (i *DefaultAgentInstaller) Install(
 	}
 
 	if err := i.prepareRemoteDirectory(
+		ctx,
+		client,
+	); err != nil {
+		return err
+	}
+
+	if err := i.stopPreviousAgent(
 		ctx,
 		client,
 	); err != nil {
@@ -96,6 +104,40 @@ func (i *DefaultAgentInstaller) prepareRemoteDirectory(
 	return nil
 }
 
+func (i *DefaultAgentInstaller) stopPreviousAgent(
+	ctx context.Context,
+	client SSHClient,
+) error {
+	command := fmt.Sprintf(`
+if [ -f %s ]; then
+    PID=$(cat %s 2>/dev/null || true)
+
+    if [ -n "$PID" ] &&
+       kill -0 "$PID" 2>/dev/null; then
+        kill "$PID" 2>/dev/null || true
+    fi
+
+    rm -f %s
+fi
+`,
+		shellQuote(i.cfg.PIDFilePath),
+		shellQuote(i.cfg.PIDFilePath),
+		shellQuote(i.cfg.PIDFilePath),
+	)
+
+	if _, err := client.Execute(
+		ctx,
+		command,
+	); err != nil {
+		return fmt.Errorf(
+			"stop previous agent: %w",
+			err,
+		)
+	}
+
+	return nil
+}
+
 func (i *DefaultAgentInstaller) uploadAgent(
 	ctx context.Context,
 	client SSHClient,
@@ -122,11 +164,12 @@ func (i *DefaultAgentInstaller) startAgent(
 	client SSHClient,
 ) error {
 	command := fmt.Sprintf(
-		"nohup %s --watch-dir %s --callback-url %s </dev/null >%s/agent.log 2>&1 &",
+		"nohup %s --watch-dir %s --callback-url %s </dev/null >%s/agent.log 2>&1 & echo $! > %s",
 		shellQuote(i.cfg.RemoteBinaryPath),
 		shellQuote(i.cfg.WatchDir),
 		shellQuote(i.cfg.CallbackURL),
 		shellQuote(i.cfg.WatchDir),
+		shellQuote(i.cfg.PIDFilePath),
 	)
 
 	if _, err := client.Execute(
@@ -164,6 +207,12 @@ func (i *DefaultAgentInstaller) validate() error {
 	if i.cfg.CallbackURL == "" {
 		return fmt.Errorf(
 			"agent callback URL is empty",
+		)
+	}
+
+	if i.cfg.PIDFilePath == "" {
+		return fmt.Errorf(
+			"agent PID file path is empty",
 		)
 	}
 

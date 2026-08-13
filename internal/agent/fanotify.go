@@ -298,9 +298,11 @@ func (w *FanotifyWatcher) handleEvent(
 		path,
 	)
 
-	userName := resolveUser(
-		event.Pid,
-	)
+	userName := resolveUser(event.Pid)
+
+	if userName == "" {
+		userName = resolveAgentUser()
+	}
 
 	if event.Mask&unix.FAN_OPEN_EXEC != 0 {
 		w.rememberExecute(
@@ -666,4 +668,13 @@ func parseUID(data []byte) int {
 	}
 
 	return -1
+}
+
+func resolveAgentUser() string {
+	u, err := user.Current()
+	if err != nil {
+		return ""
+	}
+
+	return u.Username
 }
