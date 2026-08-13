@@ -10,6 +10,7 @@ import (
 type Config struct {
 	HTTP HTTPConfig
 	SSH  SSHConfig
+	Log  LogConfig
 }
 
 type HTTPConfig struct {
@@ -20,6 +21,11 @@ type HTTPConfig struct {
 type SSHConfig struct {
 	Port           int
 	ConnectTimeout time.Duration
+}
+
+type LogConfig struct {
+	Level string
+	JSON  bool
 }
 
 func Load() (Config, error) {
@@ -39,15 +45,22 @@ func Load() (Config, error) {
 		)
 	}
 
+	jsonLogs, err := getEnvBool(
+		"LOG_JSON",
+		false,
+	)
+	if err != nil {
+		return Config{}, fmt.Errorf(
+			"LOG_JSON: %w",
+			err,
+		)
+	}
+
 	cfg := Config{
 		HTTP: HTTPConfig{
 			CreateAddr: getEnv(
 				"HTTP_CREATE_ADDR",
 				":8080",
-			),
-			CallbackAddr: getEnv(
-				"HTTP_CALLBACK_ADDR",
-				":8081",
 			),
 		},
 
@@ -55,8 +68,15 @@ func Load() (Config, error) {
 			Port:           sshPort,
 			ConnectTimeout: sshTimeout,
 		},
-	}
 
+		Log: LogConfig{
+			Level: getEnv(
+				"LOG_LEVEL",
+				"info",
+			),
+			JSON: jsonLogs,
+		},
+	}
 	if cfg.HTTP.CreateAddr == "" {
 		return Config{}, fmt.Errorf(
 			"HTTP_CREATE_ADDR is empty",
@@ -126,6 +146,27 @@ func getEnvDuration(
 	if err != nil {
 		return 0, fmt.Errorf(
 			"invalid duration %q",
+			value,
+		)
+	}
+
+	return result, nil
+}
+
+func getEnvBool(
+	key string,
+	fallback bool,
+) (bool, error) {
+	value := os.Getenv(key)
+
+	if value == "" {
+		return fallback, nil
+	}
+
+	result, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf(
+			"invalid boolean %q",
 			value,
 		)
 	}
