@@ -62,6 +62,10 @@ func Load() (Config, error) {
 				"HTTP_CREATE_ADDR",
 				":8080",
 			),
+			CallbackAddr: getEnv(
+				"HTTP_CALLBACK_ADDR",
+				":8081",
+			),
 		},
 
 		SSH: SSHConfig{

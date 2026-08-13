@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,114 +11,138 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/joho/godotenv"
+	"github.com/rezexell/bashtt/internal/agent"
 	"github.com/rezexell/bashtt/internal/config"
 	"github.com/rezexell/bashtt/internal/logging"
+	"github.com/rezexell/bashtt/internal/repository/memory"
+	"github.com/rezexell/bashtt/internal/service"
+	"github.com/rezexell/bashtt/internal/ssh"
+	templatesprovider "github.com/rezexell/bashtt/internal/templates"
 	httptransport "github.com/rezexell/bashtt/internal/transport/http"
 )
 
-const (
-	shutdownTimeout = 10 * time.Second
-)
-
 func main() {
-	if err := run(); err != nil {
+	if err := godotenv.Load(); err != nil {
+		fmt.Printf("load .env: %v", err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		panic(err)
+	}
+
+	logger := logging.New(
+		logging.Config{
+			Level: cfg.Log.Level,
+			JSON:  cfg.Log.JSON,
+		},
+	)
+
+	logger.Info("cfg", "HTTP_CREATE_ADDR:", cfg.HTTP.CreateAddr)
+
+	if err := run(logger, cfg); err != nil {
+		logger.Error(
+			"server stopped with error",
+			"error", err,
+		)
+
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	cfg, err := config.Load()
-	if err != nil {
-		return err
-	}
+func run(
+	logger *slog.Logger,
+	cfg config.Config,
+) error {
+	templateProvider := templatesprovider.New()
 
-	logger := logging.New(logging.Config{
-		Level: slog.LevelInfo,
-		JSON:  false,
-	})
+	sshFactory := ssh.NewFactory(
+		ssh.Config{
+			Port:           cfg.SSH.Port,
+			ConnectTimeout: cfg.SSH.ConnectTimeout,
+		},
+	)
 
-	logger.Info("starting server")
+	sshAdapter := service.NewSSHFactoryAdapter(
+		sshFactory,
+	)
 
-	router := httptransport.NewRouter(logger)
+	machineRepository :=
+		memory.NewMachineRepository()
 
-	createServer := &http.Server{
+	scriptRepository :=
+		memory.NewScriptRepository()
+
+	agentInstaller :=
+		agent.NewNoopInstaller()
+
+		//app
+	createService := service.NewCreateService(
+		sshAdapter,
+		templateProvider,
+		machineRepository,
+		scriptRepository,
+		agentInstaller,
+	)
+
+	//http
+	createHandler := httptransport.NewCreateHandler(
+		createService,
+	)
+
+	router := httptransport.NewRouter(
+		logger,
+		createHandler,
+	)
+
+	server := &http.Server{
 		Addr:              cfg.HTTP.CreateAddr,
 		Handler:           router.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
-	callbackServer := &http.Server{
-		Addr:              cfg.HTTP.CallbackAddr,
-		Handler:           router.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	//graceful sd
+	serverErr := make(chan error, 1)
 
-	ctx, stop := signal.NotifyContext(
+	go func() {
+		logger.Info(
+			"HTTP server started",
+			"address", cfg.HTTP.CreateAddr,
+		)
+
+		serverErr <- server.ListenAndServe()
+	}()
+
+	signalCtx, stop := signal.NotifyContext(
 		context.Background(),
-		syscall.SIGINT,
+		os.Interrupt,
 		syscall.SIGTERM,
 	)
 	defer stop()
 
-	serverErrors := make(chan error, 2)
-
-	go func() {
-		logger.Info(
-			"create API started",
-			"address", createServer.Addr,
-		)
-
-		if err := createServer.ListenAndServe(); err != nil &&
-			!errors.Is(err, http.ErrServerClosed) {
-			serverErrors <- err
-		}
-	}()
-
-	go func() {
-		logger.Info(
-			"callback API started",
-			"address", callbackServer.Addr,
-		)
-
-		if err := callbackServer.ListenAndServe(); err != nil &&
-			!errors.Is(err, http.ErrServerClosed) {
-			serverErrors <- err
-		}
-	}()
-
 	select {
-	case err := <-serverErrors:
-		logger.Error(
-			"HTTP server failed",
-			"error", err,
-		)
+	case err := <-serverErr:
+		if errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
 
 		return err
 
-	case <-ctx.Done():
+	case <-signalCtx.Done():
 		logger.Info("shutdown signal received")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(
 		context.Background(),
-		shutdownTimeout,
+		10*time.Second,
 	)
 	defer cancel()
 
-	logger.Info("shutting down servers")
-
-	if err := createServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error(
-			"failed to shutdown create API",
-			"error", err,
-		)
-	}
-
-	if err := callbackServer.Shutdown(shutdownCtx); err != nil {
-		logger.Error(
-			"failed to shutdown callback API",
-			"error", err,
-		)
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		return err
 	}
 
 	logger.Info("server stopped")
