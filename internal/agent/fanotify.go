@@ -23,9 +23,7 @@ type FanotifyWatcher struct {
 	cfg FanotifyConfig
 }
 
-func NewFanotifyWatcher(
-	cfg FanotifyConfig,
-) *FanotifyWatcher {
+func NewFanotifyWatcher(cfg FanotifyConfig) *FanotifyWatcher {
 	return &FanotifyWatcher{
 		cfg: cfg,
 	}
@@ -63,7 +61,9 @@ func (w *FanotifyWatcher) Watch(
 
 	fd, err := unix.FanotifyInit(
 		unix.FAN_CLASS_NOTIF|unix.FAN_CLOEXEC,
-		unix.O_RDONLY|unix.O_LARGEFILE,
+		unix.O_RDONLY|
+			unix.O_LARGEFILE|
+			unix.O_NONBLOCK,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -72,10 +72,16 @@ func (w *FanotifyWatcher) Watch(
 		)
 	}
 
+	mask := uint64(
+		unix.FAN_OPEN |
+			unix.FAN_OPEN_EXEC |
+			unix.FAN_EVENT_ON_CHILD,
+	)
+
 	err = unix.FanotifyMark(
 		fd,
 		unix.FAN_MARK_ADD,
-		unix.FAN_OPEN|unix.FAN_OPEN_EXEC,
+		mask,
 		unix.AT_FDCWD,
 		watchDir,
 	)
@@ -95,15 +101,13 @@ func (w *FanotifyWatcher) Watch(
 		defer close(events)
 		defer unix.Close(fd)
 
-		<-ctx.Done()
+		w.readEvents(
+			ctx,
+			fd,
+			watchDir,
+			events,
+		)
 	}()
-
-	go w.readEvents(
-		ctx,
-		fd,
-		watchDir,
-		events,
-	)
 
 	return events, nil
 }
@@ -126,15 +130,34 @@ func (w *FanotifyWatcher) readEvents(
 
 		n, err := unix.Read(fd, buffer)
 		if err != nil {
-			if err == unix.EINTR {
-				continue
-			}
+			switch err {
+			case unix.EAGAIN:
+				select {
+				case <-ctx.Done():
+					return
 
-			if err == unix.EBADF {
+				case <-time.After(100 * time.Millisecond):
+					continue
+				}
+
+			case unix.EINTR:
+				continue
+
+			case unix.EBADF:
+				return
+
+			default:
+				fmt.Printf(
+					"fanotify read error: %v\n",
+					err,
+				)
+
 				return
 			}
+		}
 
-			return
+		if n == 0 {
+			continue
 		}
 
 		offset := 0
@@ -148,8 +171,23 @@ func (w *FanotifyWatcher) readEvents(
 				break
 			}
 
+			if offset+int(event.Event_len) > n {
+				break
+			}
+
 			if event.Vers != unix.FANOTIFY_METADATA_VERSION {
+				fmt.Printf(
+					"unsupported fanotify metadata version: %d\n",
+					event.Vers,
+				)
+
 				return
+			}
+
+			if event.Metadata_len <
+				uint16(unsafe.Sizeof(unix.FanotifyEventMetadata{})) {
+				offset += int(event.Event_len)
+				continue
 			}
 
 			if event.Mask&unix.FAN_Q_OVERFLOW != 0 {
@@ -157,48 +195,62 @@ func (w *FanotifyWatcher) readEvents(
 				continue
 			}
 
-			if fd >= 0 {
-				path := resolveEventPath(
-					int(fd),
-				)
-
-				if isWatchedScript(
-					path,
+			if event.Fd >= 0 {
+				w.handleEvent(
+					ctx,
+					event,
 					watchDir,
-				) {
-					action := eventAction(event.Mask)
-
-					if action.IsValid() {
-						userName := resolveUser(
-							event.Pid,
-						)
-
-						event := domain.Event{
-							User:      userName,
-							Script:    path,
-							Action:    action,
-							CreatedAt: time.Now().UTC(),
-						}
-
-						select {
-						case events <- event:
-						case <-ctx.Done():
-							_ = unix.Close(
-								int(fd),
-							)
-
-							return
-						}
-					}
-				}
-
-				_ = unix.Close(
-					int(fd),
+					events,
 				)
+
+				_ = unix.Close(int(event.Fd))
 			}
 
 			offset += int(event.Event_len)
 		}
+	}
+}
+
+func (w *FanotifyWatcher) handleEvent(
+	ctx context.Context,
+	event *unix.FanotifyEventMetadata,
+	watchDir string,
+	events chan<- domain.Event,
+) {
+	path := resolveEventPath(
+		int(event.Fd),
+	)
+
+	if path == "" {
+		return
+	}
+
+	if !isWatchedScript(
+		path,
+		watchDir,
+	) {
+		return
+	}
+
+	action := eventAction(event.Mask)
+
+	if !action.IsValid() {
+		return
+	}
+
+	userName := resolveUser(event.Pid)
+
+	domainEvent := domain.Event{
+		User:      userName,
+		Script:    path,
+		Action:    action,
+		CreatedAt: time.Now().UTC(),
+	}
+
+	select {
+	case events <- domainEvent:
+
+	case <-ctx.Done():
 	}
 }
 
@@ -211,6 +263,13 @@ func resolveEventPath(fd int) string {
 	)
 	if err != nil {
 		return ""
+	}
+
+	if strings.HasSuffix(path, " (deleted)") {
+		path = strings.TrimSuffix(
+			path,
+			" (deleted)",
+		)
 	}
 
 	return path
@@ -264,6 +323,7 @@ func resolveUser(pid int32) string {
 	}
 
 	uid := parseUID(data)
+
 	if uid < 0 {
 		return ""
 	}

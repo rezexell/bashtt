@@ -29,8 +29,10 @@ func main() {
 	)
 	defer stop()
 
-	watcher := agent.NewFakeWatcher(
-		"/tmp/bashtt/test.sh",
+	watcher := agent.NewFanotifyWatcher(
+		agent.FanotifyConfig{
+			WatchDir: "/tmp/bashtt",
+		},
 	)
 
 	sender := agent.NewCallbackSender(
