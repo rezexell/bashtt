@@ -155,6 +155,12 @@ func Load() (Config, error) {
 		)
 	}
 
+	if cfg.Postgres.URL == "" {
+		return Config{}, fmt.Errorf(
+			"DATABASE_URL is empty",
+		)
+	}
+
 	if cfg.Agent.LocalBinaryPath == "" {
 		return Config{}, fmt.Errorf(
 			"AGENT_BINARY_PATH is empty",

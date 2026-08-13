@@ -15,7 +15,7 @@ import (
 
 	"github.com/rezexell/bashtt/internal/config"
 	"github.com/rezexell/bashtt/internal/logging"
-	"github.com/rezexell/bashtt/internal/repository/memory"
+	postgresrepo "github.com/rezexell/bashtt/internal/repository/postgres"
 	"github.com/rezexell/bashtt/internal/service"
 	"github.com/rezexell/bashtt/internal/ssh"
 	templatesprovider "github.com/rezexell/bashtt/internal/templates"
@@ -24,10 +24,7 @@ import (
 
 func main() {
 	if err := godotenv.Load(); err != nil {
-		fmt.Printf(
-			"load .env: %v\n",
-			err,
-		)
+		fmt.Printf("load .env: %v\n", err)
 	}
 
 	cfg, err := config.Load()
@@ -47,6 +44,7 @@ func main() {
 		"create_addr", cfg.HTTP.CreateAddr,
 		"callback_addr", cfg.HTTP.CallbackAddr,
 		"ssh_port", cfg.SSH.Port,
+		"database", cfg.Postgres.URL,
 		"agent_binary", cfg.Agent.LocalBinaryPath,
 		"agent_remote_path", cfg.Agent.RemoteBinaryPath,
 		"agent_watch_dir", cfg.Agent.WatchDir,
@@ -67,6 +65,34 @@ func run(
 	logger *slog.Logger,
 	cfg config.Config,
 ) error {
+	ctx := context.Background()
+
+	// PostgreSQL.
+	db, err := postgresrepo.New(
+		ctx,
+		cfg.Postgres.URL,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"connect to postgres: %w",
+			err,
+		)
+	}
+
+	defer db.Close()
+
+	machineRepository := postgresrepo.NewMachineRepository(
+		db,
+	)
+
+	scriptRepository := postgresrepo.NewScriptRepository(
+		db,
+	)
+
+	eventRepository := postgresrepo.NewEventRepository(
+		db,
+	)
+
 	templateProvider := templatesprovider.New()
 
 	sshFactory := ssh.NewFactory(
@@ -79,15 +105,6 @@ func run(
 	sshAdapter := service.NewSSHFactoryAdapter(
 		sshFactory,
 	)
-
-	machineRepository :=
-		memory.NewMachineRepository()
-
-	scriptRepository :=
-		memory.NewScriptRepository()
-
-	eventRepository :=
-		memory.NewEventRepository()
 
 	agentInstaller := service.NewAgentInstaller(
 		service.AgentInstallerConfig{
@@ -110,8 +127,10 @@ func run(
 	callbackService := service.NewCallbackService(
 		logger,
 		eventRepository,
+		scriptRepository,
 	)
 
+	// HTTP handlers.
 	createHandler := httptransport.NewCreateHandler(
 		createService,
 	)
@@ -122,6 +141,7 @@ func run(
 
 	healthHandler := httptransport.NewHealthHandler()
 
+	// HTTP router.
 	router := httptransport.NewRouter(
 		logger,
 		createHandler,
@@ -129,6 +149,7 @@ func run(
 		healthHandler,
 	)
 
+	// HTTP servers.
 	createServer := newHTTPServer(
 		cfg.HTTP.CreateAddr,
 		router.CreateHandler(),
@@ -141,6 +162,7 @@ func run(
 
 	serverErrors := make(chan error, 2)
 
+	// Create API.
 	go func() {
 		logger.Info(
 			"create API started",
@@ -150,6 +172,7 @@ func run(
 		serverErrors <- createServer.ListenAndServe()
 	}()
 
+	// Callback API.
 	go func() {
 		logger.Info(
 			"callback API started",
@@ -159,6 +182,7 @@ func run(
 		serverErrors <- callbackServer.ListenAndServe()
 	}()
 
+	// Graceful shutdown.
 	signalCtx, stop := signal.NotifyContext(
 		context.Background(),
 		os.Interrupt,
@@ -168,19 +192,14 @@ func run(
 
 	select {
 	case err := <-serverErrors:
-		if errors.Is(
-			err,
-			http.ErrServerClosed,
-		) {
+		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
 
 		return err
 
 	case <-signalCtx.Done():
-		logger.Info(
-			"shutdown signal received",
-		)
+		logger.Info("shutdown signal received")
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(
@@ -207,9 +226,7 @@ func run(
 		)
 	}
 
-	logger.Info(
-		"server stopped",
-	)
+	logger.Info("server stopped")
 
 	return nil
 }

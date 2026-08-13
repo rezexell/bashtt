@@ -50,14 +50,14 @@ type TemplateProvider interface {
 }
 
 type MachineRepository interface {
-	Create(
+	CreateMachine(
 		ctx context.Context,
 		machine domain.Machine,
 	) error
 }
 
 type ScriptRepository interface {
-	Create(
+	CreateScript(
 		ctx context.Context,
 		script domain.Script,
 	) error
@@ -193,9 +193,8 @@ func (s *CreateService) Create(
 		}
 	}
 
-	// Пока repository in-memory.
 	if s.machines != nil {
-		if err := s.machines.Create(
+		if err := s.machines.CreateMachine(
 			ctx,
 			machine,
 		); err != nil {
@@ -207,7 +206,7 @@ func (s *CreateService) Create(
 	}
 
 	if s.scripts != nil {
-		if err := s.scripts.Create(
+		if err := s.scripts.CreateScript(
 			ctx,
 			script,
 		); err != nil {

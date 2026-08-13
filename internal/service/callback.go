@@ -7,14 +7,22 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/rezexell/bashtt/internal/domain"
 )
 
 type EventRepository interface {
-	Create(
+	CreateEvent(
 		ctx context.Context,
 		event domain.Event,
 	) error
+}
+
+type ScriptLookupRepository interface {
+	GetScriptByPath(
+		ctx context.Context,
+		path string,
+	) (domain.Script, error)
 }
 
 type CallbackRequest struct {
@@ -27,15 +35,18 @@ type CallbackRequest struct {
 type CallbackService struct {
 	logger     *slog.Logger
 	eventsRepo EventRepository
+	scripts    ScriptLookupRepository
 }
 
 func NewCallbackService(
 	logger *slog.Logger,
 	eventsRepo EventRepository,
+	scripts ScriptLookupRepository,
 ) *CallbackService {
 	return &CallbackService{
 		logger:     logger,
 		eventsRepo: eventsRepo,
+		scripts:    scripts,
 	}
 }
 
@@ -47,8 +58,24 @@ func (s *CallbackService) Handle(
 		return err
 	}
 
+	script, err := s.scripts.GetScriptByPath(
+		ctx,
+		req.Script,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"find script: %w",
+			err,
+		)
+	}
+
+	machineID := script.MachineID
+
 	event := domain.Event{
 		ID: uuid.New(),
+
+		MachineID: &machineID,
+		ScriptID:  &script.ID,
 
 		User:   req.User,
 		Script: req.Script,
@@ -57,7 +84,7 @@ func (s *CallbackService) Handle(
 		CreatedAt: req.Time,
 	}
 
-	if err := s.eventsRepo.Create(
+	if err := s.eventsRepo.CreateEvent(
 		ctx,
 		event,
 	); err != nil {
@@ -72,6 +99,8 @@ func (s *CallbackService) Handle(
 		"user", event.User,
 		"script", event.Script,
 		"action", event.Action,
+		"machine_id", event.MachineID,
+		"script_id", event.ScriptID,
 		"time", event.CreatedAt,
 	)
 

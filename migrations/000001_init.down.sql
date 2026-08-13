@@ -1,0 +1,6 @@
+DROP TABLE IF EXISTS events;
+DROP TABLE IF EXISTS scripts;
+DROP TABLE IF EXISTS machines;
+
+DROP TYPE IF EXISTS event_action;
+DROP TYPE IF EXISTS template;
