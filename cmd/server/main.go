@@ -26,6 +26,7 @@ func main() {
 	if err := godotenv.Load(); err != nil {
 		fmt.Printf("load .env: %v", err)
 	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		panic(err)
@@ -73,6 +74,9 @@ func run(
 	scriptRepository :=
 		memory.NewScriptRepository()
 
+	eventRepository :=
+		memory.NewEventRepository()
+
 	agentInstaller :=
 		agent.NewNoopInstaller()
 
@@ -85,35 +89,51 @@ func run(
 		agentInstaller,
 	)
 
+	callbackService := service.NewCallbackService(
+		logger,
+		eventRepository,
+	)
+
 	//http
 	createHandler := httptransport.NewCreateHandler(
 		createService,
 	)
 
+	callbackHandler := httptransport.NewCallbackHandler(
+		callbackService,
+	)
+
+	healthHandler := httptransport.NewHealthHandler()
+
 	router := httptransport.NewRouter(
 		logger,
 		createHandler,
+		callbackHandler,
+		healthHandler,
 	)
 
-	server := &http.Server{
-		Addr:              cfg.HTTP.CreateAddr,
-		Handler:           router.Handler(),
-		ReadHeaderTimeout: 5 * time.Second,
-		ReadTimeout:       10 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       60 * time.Second,
-	}
+	createServer := newHTTPServer(cfg.HTTP.CreateAddr, router.CreateHandler())
 
+	callbackServer := newHTTPServer(cfg.HTTP.CallbackAddr, router.CallbackHandler())
 	//graceful sd
-	serverErr := make(chan error, 1)
+	serverErrors := make(chan error, 2)
 
 	go func() {
 		logger.Info(
-			"HTTP server started",
+			"create API started",
 			"address", cfg.HTTP.CreateAddr,
 		)
 
-		serverErr <- server.ListenAndServe()
+		serverErrors <- createServer.ListenAndServe()
+	}()
+
+	go func() {
+		logger.Info(
+			"callback API started",
+			"address", cfg.HTTP.CallbackAddr,
+		)
+
+		serverErrors <- callbackServer.ListenAndServe()
 	}()
 
 	signalCtx, stop := signal.NotifyContext(
@@ -124,7 +144,7 @@ func run(
 	defer stop()
 
 	select {
-	case err := <-serverErr:
+	case err := <-serverErrors:
 		if errors.Is(err, http.ErrServerClosed) {
 			return nil
 		}
@@ -141,11 +161,40 @@ func run(
 	)
 	defer cancel()
 
-	if err := server.Shutdown(shutdownCtx); err != nil {
-		return err
+	if err := createServer.Shutdown(
+		shutdownCtx,
+	); err != nil {
+		logger.Error(
+			"create server shutdown failed",
+			"error", err,
+		)
+	}
+
+	if err := callbackServer.Shutdown(
+		shutdownCtx,
+	); err != nil {
+		logger.Error(
+			"callback server shutdown failed",
+			"error", err,
+		)
 	}
 
 	logger.Info("server stopped")
 
 	return nil
+}
+
+func newHTTPServer(
+	addr string,
+	handler http.Handler,
+) *http.Server {
+	return &http.Server{
+		Addr:    addr,
+		Handler: handler,
+
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }

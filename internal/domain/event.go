@@ -23,13 +23,13 @@ func (a EventAction) IsValid() bool {
 }
 
 type Event struct {
-	ID        int64
+	ID        uuid.UUID
 	MachineID *uuid.UUID
 	ScriptID  *uuid.UUID
 
-	Username string
-	Script   string
-	Action   EventAction
+	User   string
+	Script string
+	Action EventAction
 
 	CreatedAt time.Time
 }

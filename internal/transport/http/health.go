@@ -1,20 +1,21 @@
 package httptransport
 
 import (
-	"encoding/json"
 	"net/http"
 )
 
-type healthResponse struct {
-	Status string `json:"status"`
+type HealthHandler struct{}
+
+func NewHealthHandler() *HealthHandler {
+	return &HealthHandler{}
 }
 
-func (r *Router) health(w http.ResponseWriter, req *http.Request) {
+func (h *HealthHandler) Health(
+	w http.ResponseWriter,
+	_ *http.Request,
+) {
 	w.Header().Set("Content-Type", "application/json")
-
 	w.WriteHeader(http.StatusOK)
 
-	_ = json.NewEncoder(w).Encode(healthResponse{
-		Status: "ok",
-	})
+	_, _ = w.Write([]byte(`{"status":"ok"}`))
 }
