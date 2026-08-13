@@ -3,5 +3,9 @@ services:
     build:
       context: ./test/ssh
     container_name: script-monitor-ssh
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    cap_add:
+      - SYS_ADMIN
     ports:
       - "2222:22"

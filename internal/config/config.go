@@ -8,9 +8,10 @@ import (
 )
 
 type Config struct {
-	HTTP HTTPConfig
-	SSH  SSHConfig
-	Log  LogConfig
+	HTTP  HTTPConfig
+	SSH   SSHConfig
+	Agent AgentConfig
+	Log   LogConfig
 }
 
 type HTTPConfig struct {
@@ -21,6 +22,13 @@ type HTTPConfig struct {
 type SSHConfig struct {
 	Port           int
 	ConnectTimeout time.Duration
+}
+
+type AgentConfig struct {
+	LocalBinaryPath  string
+	RemoteBinaryPath string
+	WatchDir         string
+	CallbackURL      string
 }
 
 type LogConfig struct {
@@ -73,6 +81,28 @@ func Load() (Config, error) {
 			ConnectTimeout: sshTimeout,
 		},
 
+		Agent: AgentConfig{
+			LocalBinaryPath: getEnv(
+				"AGENT_BINARY_PATH",
+				"./bin/agent",
+			),
+
+			RemoteBinaryPath: getEnv(
+				"AGENT_REMOTE_BINARY_PATH",
+				"/tmp/bashtt/agent",
+			),
+
+			WatchDir: getEnv(
+				"AGENT_WATCH_DIR",
+				"/tmp/bashtt",
+			),
+
+			CallbackURL: getEnv(
+				"AGENT_CALLBACK_URL",
+				"http://127.0.0.1:8081/callback",
+			),
+		},
+
 		Log: LogConfig{
 			Level: getEnv(
 				"LOG_LEVEL",
@@ -81,6 +111,7 @@ func Load() (Config, error) {
 			JSON: jsonLogs,
 		},
 	}
+
 	if cfg.HTTP.CreateAddr == "" {
 		return Config{}, fmt.Errorf(
 			"HTTP_CREATE_ADDR is empty",
@@ -102,6 +133,30 @@ func Load() (Config, error) {
 	if cfg.SSH.ConnectTimeout <= 0 {
 		return Config{}, fmt.Errorf(
 			"SSH_TIMEOUT must be greater than zero",
+		)
+	}
+
+	if cfg.Agent.LocalBinaryPath == "" {
+		return Config{}, fmt.Errorf(
+			"AGENT_BINARY_PATH is empty",
+		)
+	}
+
+	if cfg.Agent.RemoteBinaryPath == "" {
+		return Config{}, fmt.Errorf(
+			"AGENT_REMOTE_BINARY_PATH is empty",
+		)
+	}
+
+	if cfg.Agent.WatchDir == "" {
+		return Config{}, fmt.Errorf(
+			"AGENT_WATCH_DIR is empty",
+		)
+	}
+
+	if cfg.Agent.CallbackURL == "" {
+		return Config{}, fmt.Errorf(
+			"AGENT_CALLBACK_URL is empty",
 		)
 	}
 

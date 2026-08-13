@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log/slog"
 	"net/http"
 	"os"
@@ -13,6 +14,20 @@ import (
 )
 
 func main() {
+	watchDir := flag.String(
+		"watch-dir",
+		"/tmp/bashtt",
+		"directory to watch",
+	)
+
+	callbackURL := flag.String(
+		"callback-url",
+		"http://127.0.0.1:8081/callback",
+		"callback URL",
+	)
+
+	flag.Parse()
+
 	logger := slog.New(
 		slog.NewTextHandler(
 			os.Stdout,
@@ -31,7 +46,7 @@ func main() {
 
 	watcher := agent.NewFanotifyWatcher(
 		agent.FanotifyConfig{
-			WatchDir: "/tmp/bashtt",
+			WatchDir: *watchDir,
 		},
 	)
 
@@ -39,7 +54,7 @@ func main() {
 		&http.Client{
 			Timeout: 10 * time.Second,
 		},
-		"http://127.0.0.1:8081/callback",
+		*callbackURL,
 	)
 
 	a := agent.New(
@@ -53,5 +68,7 @@ func main() {
 			"agent stopped",
 			"error", err,
 		)
+
+		os.Exit(1)
 	}
 }
