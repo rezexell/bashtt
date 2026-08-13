@@ -1,0 +1,7 @@
+services:
+  ssh:
+    build:
+      context: ./test/ssh
+    container_name: script-monitor-ssh
+    ports:
+      - "2222:22"
