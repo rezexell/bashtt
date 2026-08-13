@@ -13,7 +13,7 @@ import (
 )
 
 const (
-	defaultScriptDir  = "/tmp/script-monitor"
+	defaultScriptDir  = "/tmp/bashtt"
 	defaultScriptMode = 0755
 )
 
