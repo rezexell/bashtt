@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -14,6 +15,22 @@ import (
 type Config struct {
 	Port           int
 	ConnectTimeout time.Duration
+}
+
+type Client interface {
+	Close() error
+
+	Upload(
+		ctx context.Context,
+		path string,
+		data []byte,
+		mode os.FileMode,
+	) error
+
+	Execute(
+		ctx context.Context,
+		command string,
+	) ([]byte, error)
 }
 
 type Factory struct {
@@ -26,7 +43,7 @@ func NewFactory(config Config) *Factory {
 	}
 }
 
-type Client struct {
+type client struct {
 	sshClient  *gossh.Client
 	sftpClient *sftp.Client
 }
@@ -36,7 +53,7 @@ func (f *Factory) Connect(
 	host string,
 	user string,
 	password string,
-) (*Client, error) {
+) (Client, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -51,8 +68,12 @@ func (f *Factory) Connect(
 		Auth: []gossh.AuthMethod{
 			gossh.Password(password),
 		},
+
+		// Для тестового задания.
+		// В production необходимо проверять host key.
 		HostKeyCallback: gossh.InsecureIgnoreHostKey(),
-		Timeout:         f.config.ConnectTimeout,
+
+		Timeout: f.config.ConnectTimeout,
 	}
 
 	dialer := &net.Dialer{
@@ -81,7 +102,7 @@ func (f *Factory) Connect(
 		_ = rawConn.Close()
 
 		return nil, fmt.Errorf(
-			"create SSH connection to %s: %w",
+			"SSH handshake with %s: %w",
 			address,
 			err,
 		)
@@ -103,13 +124,13 @@ func (f *Factory) Connect(
 		)
 	}
 
-	return &Client{
+	return &client{
 		sshClient:  sshClient,
 		sftpClient: sftpClient,
 	}, nil
 }
 
-func (c *Client) Close() error {
+func (c *client) Close() error {
 	var firstErr error
 
 	if c.sftpClient != nil {
@@ -127,7 +148,7 @@ func (c *Client) Close() error {
 	return firstErr
 }
 
-func (c *Client) Upload(
+func (c *client) Upload(
 	ctx context.Context,
 	path string,
 	data []byte,
@@ -135,6 +156,16 @@ func (c *Client) Upload(
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
+	}
+
+	dir := filepath.Dir(path)
+
+	if err := c.sftpClient.MkdirAll(dir); err != nil {
+		return fmt.Errorf(
+			"create remote directory %q: %w",
+			dir,
+			err,
+		)
 	}
 
 	file, err := c.sftpClient.Create(path)
@@ -167,7 +198,7 @@ func (c *Client) Upload(
 	return nil
 }
 
-func (c *Client) Execute(
+func (c *client) Execute(
 	ctx context.Context,
 	command string,
 ) ([]byte, error) {
@@ -210,7 +241,7 @@ func (c *Client) Execute(
 	case result := <-resultCh:
 		if result.err != nil {
 			return result.output, fmt.Errorf(
-				"execute remote command %q: %w",
+				"execute command %q: %w",
 				command,
 				result.err,
 			)
