@@ -8,10 +8,11 @@ import (
 )
 
 type Config struct {
-	HTTP  HTTPConfig
-	SSH   SSHConfig
-	Agent AgentConfig
-	Log   LogConfig
+	HTTP     HTTPConfig
+	SSH      SSHConfig
+	Postgres PostgresConfig
+	Agent    AgentConfig
+	Log      LogConfig
 }
 
 type HTTPConfig struct {
@@ -22,6 +23,10 @@ type HTTPConfig struct {
 type SSHConfig struct {
 	Port           int
 	ConnectTimeout time.Duration
+}
+
+type PostgresConfig struct {
+	URL string
 }
 
 type AgentConfig struct {
@@ -65,6 +70,10 @@ func Load() (Config, error) {
 		)
 	}
 
+	postgresURL := getEnv(
+		"POSTGRES_URL",
+		"postgres://bashtt:bashtt@localhost:5432/bashtt?sslmode=disable",
+	)
 	cfg := Config{
 		HTTP: HTTPConfig{
 			CreateAddr: getEnv(
@@ -80,6 +89,10 @@ func Load() (Config, error) {
 		SSH: SSHConfig{
 			Port:           sshPort,
 			ConnectTimeout: sshTimeout,
+		},
+
+		Postgres: PostgresConfig{
+			URL: postgresURL,
 		},
 
 		Agent: AgentConfig{
