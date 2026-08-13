@@ -9,13 +9,13 @@ import (
 type EventAction string
 
 const (
-	EventActionOpen    EventAction = "open"
-	EventActionExecute EventAction = "execute"
+	EventOpen    EventAction = "open"
+	EventExecute EventAction = "execute"
 )
 
 func (a EventAction) IsValid() bool {
 	switch a {
-	case EventActionOpen, EventActionExecute:
+	case EventOpen, EventExecute:
 		return true
 	default:
 		return false
@@ -23,11 +23,13 @@ func (a EventAction) IsValid() bool {
 }
 
 type Event struct {
-	ID         int64
-	ScriptID   uuid.UUID
-	Username   string
-	ScriptPath string
-	Action     EventAction
-	Time       time.Time
-	CreatedAt  time.Time
+	ID        int64
+	MachineID *uuid.UUID
+	ScriptID  *uuid.UUID
+
+	Username string
+	Script   string
+	Action   EventAction
+
+	CreatedAt time.Time
 }
