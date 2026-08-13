@@ -8,11 +8,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/rezexell/bashtt/internal/domain"
 	"golang.org/x/sys/unix"
+)
+
+const (
+	openDebounce = 100 * time.Millisecond
+
+	executeRememberDuration = 500 * time.Millisecond
 )
 
 type FanotifyConfig struct {
@@ -21,11 +28,35 @@ type FanotifyConfig struct {
 
 type FanotifyWatcher struct {
 	cfg FanotifyConfig
+
+	mu sync.Mutex
+
+	pendingOpen   map[pendingOpen]*time.Timer
+	recentExecute map[eventKey]time.Time
+}
+
+type eventKey struct {
+	pid  int32
+	path string
+}
+
+type pendingOpen struct {
+	pid  int32
+	path string
+	user string
 }
 
 func NewFanotifyWatcher(cfg FanotifyConfig) *FanotifyWatcher {
 	return &FanotifyWatcher{
 		cfg: cfg,
+
+		pendingOpen: make(
+			map[pendingOpen]*time.Timer,
+		),
+
+		recentExecute: make(
+			map[eventKey]time.Time,
+		),
 	}
 }
 
@@ -33,7 +64,9 @@ func (w *FanotifyWatcher) Watch(
 	ctx context.Context,
 ) (<-chan domain.Event, error) {
 	if w.cfg.WatchDir == "" {
-		return nil, fmt.Errorf("watch directory is empty")
+		return nil, fmt.Errorf(
+			"watch directory is empty",
+		)
 	}
 
 	info, err := os.Stat(w.cfg.WatchDir)
@@ -51,7 +84,9 @@ func (w *FanotifyWatcher) Watch(
 		)
 	}
 
-	watchDir, err := filepath.Abs(w.cfg.WatchDir)
+	watchDir, err := filepath.Abs(
+		w.cfg.WatchDir,
+	)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"resolve watch directory: %w",
@@ -107,6 +142,8 @@ func (w *FanotifyWatcher) Watch(
 			watchDir,
 			events,
 		)
+
+		w.cleanup()
 	}()
 
 	return events, nil
@@ -128,7 +165,11 @@ func (w *FanotifyWatcher) readEvents(
 		default:
 		}
 
-		n, err := unix.Read(fd, buffer)
+		n, err := unix.Read(
+			fd,
+			buffer,
+		)
+
 		if err != nil {
 			switch err {
 			case unix.EAGAIN:
@@ -136,7 +177,9 @@ func (w *FanotifyWatcher) readEvents(
 				case <-ctx.Done():
 					return
 
-				case <-time.After(100 * time.Millisecond):
+				case <-time.After(
+					100 * time.Millisecond,
+				):
 					continue
 				}
 
@@ -163,8 +206,18 @@ func (w *FanotifyWatcher) readEvents(
 		offset := 0
 
 		for offset < n {
+			if n-offset < int(
+				unsafe.Sizeof(
+					unix.FanotifyEventMetadata{},
+				),
+			) {
+				break
+			}
+
 			event := (*unix.FanotifyEventMetadata)(
-				unsafe.Pointer(&buffer[offset]),
+				unsafe.Pointer(
+					&buffer[offset],
+				),
 			)
 
 			if event.Event_len == 0 {
@@ -185,7 +238,11 @@ func (w *FanotifyWatcher) readEvents(
 			}
 
 			if event.Metadata_len <
-				uint16(unsafe.Sizeof(unix.FanotifyEventMetadata{})) {
+				uint16(
+					unsafe.Sizeof(
+						unix.FanotifyEventMetadata{},
+					),
+				) {
 				offset += int(event.Event_len)
 				continue
 			}
@@ -203,7 +260,9 @@ func (w *FanotifyWatcher) readEvents(
 					events,
 				)
 
-				_ = unix.Close(int(event.Fd))
+				_ = unix.Close(
+					int(event.Fd),
+				)
 			}
 
 			offset += int(event.Event_len)
@@ -232,15 +291,255 @@ func (w *FanotifyWatcher) handleEvent(
 		return
 	}
 
-	action := eventAction(event.Mask)
+	fmt.Printf(
+		"fanotify: pid=%d mask=%#x path=%s\n",
+		event.Pid,
+		event.Mask,
+		path,
+	)
 
+	userName := resolveUser(
+		event.Pid,
+	)
+
+	if event.Mask&unix.FAN_OPEN_EXEC != 0 {
+		w.rememberExecute(
+			event.Pid,
+			path,
+		)
+
+		w.cancelPendingOpen(
+			event.Pid,
+			path,
+		)
+
+		w.sendEvent(
+			ctx,
+			events,
+			userName,
+			path,
+			domain.EventExecute,
+		)
+
+		return
+	}
+
+	if event.Mask&unix.FAN_OPEN != 0 {
+		if w.wasRecentlyExecuted(
+			event.Pid,
+			path,
+		) {
+			return
+		}
+
+		key := pendingOpen{
+			pid:  event.Pid,
+			path: path,
+			user: userName,
+		}
+
+		w.scheduleOpen(
+			ctx,
+			events,
+			key,
+		)
+	}
+}
+
+func (w *FanotifyWatcher) rememberExecute(
+	pid int32,
+	path string,
+) {
+	w.mu.Lock()
+
+	key := eventKey{
+		pid:  pid,
+		path: path,
+	}
+
+	w.recentExecute[key] = time.Now()
+
+	w.mu.Unlock()
+
+	time.AfterFunc(
+		executeRememberDuration,
+		func() {
+			w.mu.Lock()
+			defer w.mu.Unlock()
+
+			t, ok := w.recentExecute[key]
+			if !ok {
+				return
+			}
+
+			if time.Since(t) >=
+				executeRememberDuration {
+				delete(
+					w.recentExecute,
+					key,
+				)
+			}
+		},
+	)
+}
+
+func (w *FanotifyWatcher) wasRecentlyExecuted(
+	pid int32,
+	path string,
+) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	key := eventKey{
+		pid:  pid,
+		path: path,
+	}
+
+	t, ok := w.recentExecute[key]
+	if !ok {
+		return false
+	}
+
+	if time.Since(t) >
+		executeRememberDuration {
+		delete(
+			w.recentExecute,
+			key,
+		)
+
+		return false
+	}
+
+	return true
+}
+
+func (w *FanotifyWatcher) scheduleOpen(
+	ctx context.Context,
+	events chan<- domain.Event,
+	key pendingOpen,
+) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for existing := range w.pendingOpen {
+		if existing.pid == key.pid &&
+			existing.path == key.path {
+			return
+		}
+	}
+
+	timer := time.AfterFunc(
+		openDebounce,
+		func() {
+			w.firePendingOpen(
+				ctx,
+				events,
+				key,
+			)
+		},
+	)
+
+	w.pendingOpen[key] = timer
+}
+
+func (w *FanotifyWatcher) firePendingOpen(
+	ctx context.Context,
+	events chan<- domain.Event,
+	key pendingOpen,
+) {
+	w.mu.Lock()
+
+	var found bool
+
+	for existing, timer := range w.pendingOpen {
+		if existing.pid != key.pid ||
+			existing.path != key.path {
+			continue
+		}
+
+		delete(
+			w.pendingOpen,
+			existing,
+		)
+
+		timer.Stop()
+
+		found = true
+
+		break
+	}
+
+	w.mu.Unlock()
+
+	if !found {
+		return
+	}
+	if w.wasRecentlyExecuted(
+		key.pid,
+		key.path,
+	) {
+		return
+	}
+
+	w.sendEvent(
+		ctx,
+		events,
+		key.user,
+		key.path,
+		domain.EventOpen,
+	)
+}
+
+func (w *FanotifyWatcher) cancelPendingOpen(
+	pid int32,
+	path string,
+) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for existing, timer := range w.pendingOpen {
+		if existing.pid != pid ||
+			existing.path != path {
+			continue
+		}
+
+		delete(
+			w.pendingOpen,
+			existing,
+		)
+
+		timer.Stop()
+	}
+}
+
+func (w *FanotifyWatcher) cleanup() {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for key, timer := range w.pendingOpen {
+		timer.Stop()
+
+		delete(
+			w.pendingOpen,
+			key,
+		)
+	}
+
+	clear(w.recentExecute)
+}
+
+func (w *FanotifyWatcher) sendEvent(
+	ctx context.Context,
+	events chan<- domain.Event,
+	userName string,
+	path string,
+	action domain.EventAction,
+) {
 	if !action.IsValid() {
 		return
 	}
 
-	userName := resolveUser(event.Pid)
-
-	domainEvent := domain.Event{
+	event := domain.Event{
 		User:      userName,
 		Script:    path,
 		Action:    action,
@@ -248,7 +547,7 @@ func (w *FanotifyWatcher) handleEvent(
 	}
 
 	select {
-	case events <- domainEvent:
+	case events <- event:
 
 	case <-ctx.Done():
 	}
@@ -265,7 +564,10 @@ func resolveEventPath(fd int) string {
 		return ""
 	}
 
-	if strings.HasSuffix(path, " (deleted)") {
+	if strings.HasSuffix(
+		path,
+		" (deleted)",
+	) {
 		path = strings.TrimSuffix(
 			path,
 			" (deleted)",
@@ -286,25 +588,20 @@ func isWatchedScript(
 	path = filepath.Clean(path)
 	watchDir = filepath.Clean(watchDir)
 
-	prefix := watchDir + string(os.PathSeparator)
+	prefix := watchDir +
+		string(os.PathSeparator)
 
-	if !strings.HasPrefix(path, prefix) {
+	if !strings.HasPrefix(
+		path,
+		prefix,
+	) {
 		return false
 	}
 
-	return strings.HasSuffix(path, ".sh")
-}
-
-func eventAction(mask uint64) domain.EventAction {
-	if mask&unix.FAN_OPEN_EXEC != 0 {
-		return domain.EventExecute
-	}
-
-	if mask&unix.FAN_OPEN != 0 {
-		return domain.EventOpen
-	}
-
-	return ""
+	return strings.HasSuffix(
+		path,
+		".sh",
+	)
 }
 
 func resolveUser(pid int32) string {
@@ -345,7 +642,10 @@ func parseUID(data []byte) int {
 	)
 
 	for _, line := range lines {
-		if !strings.HasPrefix(line, "Uid:") {
+		if !strings.HasPrefix(
+			line,
+			"Uid:",
+		) {
 			continue
 		}
 
@@ -355,7 +655,9 @@ func parseUID(data []byte) int {
 			return -1
 		}
 
-		uid, err := strconv.Atoi(fields[1])
+		uid, err := strconv.Atoi(
+			fields[1],
+		)
 		if err != nil {
 			return -1
 		}
